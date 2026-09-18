@@ -1,8 +1,6 @@
-import { useEffect, useRef } from 'react';
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { RedactionMap } from '../types';
-
-const THUMB_WIDTH = 132;
+import { PageThumbnail } from './PageThumbnail';
 
 interface Props {
   pdf: PDFDocumentProxy;
@@ -11,67 +9,28 @@ interface Props {
   onSelect(pageNum: number): void;
 }
 
+/**
+ * 左侧页面列表：始终按**原始页号**顺序排列，点击跳转到对应原页。
+ * 导出顺序 / 排除在「导出页序」面板中编排，不影响这里。
+ */
 export function PageList({ pdf, current, redactions, onSelect }: Props) {
   return (
     <aside className="page-list">
       {Array.from({ length: pdf.numPages }, (_, i) => i + 1).map((n) => (
-        <Thumb
+        <button
           key={n}
-          pdf={pdf}
-          pageNum={n}
-          active={n === current}
-          count={redactions[n]?.length ?? 0}
+          className={`thumb${n === current ? ' active' : ''}`}
           onClick={() => onSelect(n)}
-        />
+        >
+          <PageThumbnail pdf={pdf} pageNum={n} />
+          <div className="thumb-meta">
+            <span>第 {n} 页</span>
+            {redactions[n]?.length > 0 && (
+              <span className="badge">{redactions[n]!.length} 处遮盖</span>
+            )}
+          </div>
+        </button>
       ))}
     </aside>
-  );
-}
-
-interface ThumbProps {
-  pdf: PDFDocumentProxy;
-  pageNum: number;
-  active: boolean;
-  count: number;
-  onClick(): void;
-}
-
-function Thumb({ pdf, pageNum, active, count, onClick }: ThumbProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    let task: { cancel(): void } | undefined;
-    (async () => {
-      const page = await pdf.getPage(pageNum);
-      if (cancelled) return;
-      const base = page.getViewport({ scale: 1 });
-      const viewport = page.getViewport({ scale: THUMB_WIDTH / base.width });
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      canvas.width = Math.max(1, Math.floor(viewport.width));
-      canvas.height = Math.max(1, Math.floor(viewport.height));
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      const renderTask = page.render({ canvasContext: ctx, viewport });
-      task = renderTask;
-      await renderTask.promise.catch(() => {
-        /* 取消时忽略 */
-      });
-    })();
-    return () => {
-      cancelled = true;
-      task?.cancel();
-    };
-  }, [pdf, pageNum]);
-
-  return (
-    <button className={`thumb${active ? ' active' : ''}`} onClick={onClick}>
-      <canvas ref={canvasRef} />
-      <div className="thumb-meta">
-        <span>第 {pageNum} 页</span>
-        {count > 0 && <span className="badge">{count} 处遮盖</span>}
-      </div>
-    </button>
   );
 }

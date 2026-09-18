@@ -7,21 +7,28 @@ export const EXPORT_DPI = 144;
 
 /**
  * 安全导出：
- * 1. 每页按 144 DPI 栅格化为位图（原始文字、矢量对象全部消失）；
- * 2. 遮盖区域以纯黑矩形烧入位图；
- * 3. 用 pdf-lib 生成全新 PDF，每页只包含一张位图，页面尺寸与原页保持一致。
+ * 1. 仅导出 pageOrder 给出的原始页（按其中的排列顺序，已排除页不在列表中）；
+ * 2. 每页按 144 DPI 栅格化为位图（原始文字、矢量对象全部消失）；
+ * 3. 遮盖区域以纯黑矩形烧入位图——遮盖始终按**原始页号**从 redactions 取，
+ *    与页面在导出序列中的位置无关；
+ * 4. 用 pdf-lib 生成全新 PDF，每页只包含一张位图，页面尺寸与原页保持一致。
  * 因此导出的 PDF 不再保留被遮区域的可复制文字或任何原始页面对象。
+ *
+ * @param pageOrder 要导出的原始页号，按导出顺序排列（调用方负责过滤已排除页）
  */
 export async function exportRedactedPdf(
   pdf: PDFDocumentProxy,
   redactions: RedactionMap,
+  pageOrder: number[],
   sourceName: string,
   onProgress?: (done: number, total: number) => void,
 ): Promise<void> {
   const out = await PDFDocument.create();
   const scale = EXPORT_DPI / 72;
+  const total = pageOrder.length;
 
-  for (let n = 1; n <= pdf.numPages; n += 1) {
+  for (let i = 0; i < pageOrder.length; i += 1) {
+    const n = pageOrder[i];
     const page = await pdf.getPage(n);
     // 原始页面尺寸（点），包含页面自身旋转，保证导出后各页尺寸不变
     const base = page.getViewport({ scale: 1 });
@@ -59,7 +66,7 @@ export async function exportRedactedPdf(
     const newPage = out.addPage([base.width, base.height]);
     newPage.drawImage(png, { x: 0, y: 0, width: base.width, height: base.height });
 
-    onProgress?.(n, pdf.numPages);
+    onProgress?.(i + 1, total);
   }
 
   const bytes = await out.save();

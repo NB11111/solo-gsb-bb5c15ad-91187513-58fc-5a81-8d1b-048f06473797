@@ -12,6 +12,7 @@ interface Props {
   findOpen: boolean;
   repeatOpen: boolean;
   leakOpen: boolean;
+  orderOpen: boolean;
   /** 各页尺寸尚未收集完成时，方案导出暂不可用 */
   canUseScheme: boolean;
   onOpen(): void;
@@ -19,6 +20,7 @@ interface Props {
   onToggleFind(): void;
   onToggleRepeat(): void;
   onToggleLeak(): void;
+  onToggleOrder(): void;
   onZoomIn(): void;
   onZoomOut(): void;
   onRotate(): void;
@@ -45,6 +47,7 @@ export function Toolbar(props: Props) {
     findOpen,
     repeatOpen,
     leakOpen,
+    orderOpen,
     canUseScheme,
   } = props;
 
@@ -98,6 +101,14 @@ export function Toolbar(props: Props) {
         title="导出前逐页扫描文本片段，找出与遮盖相交但没被完整盖住的边缘泄漏（纯本地）"
       >
         边缘泄漏检查
+      </button>
+      <button
+        className={orderOpen ? 'active' : ''}
+        disabled={!hasDoc}
+        onClick={props.onToggleOrder}
+        title="编排导出 PDF 的页面顺序，可上移 / 下移、排除或恢复页面（不影响遮盖）"
+      >
+        导出页序
       </button>
 
       <div className="sep" />

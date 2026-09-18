@@ -38,6 +38,14 @@ import {
   type RedactionScheme,
 } from './pdf/scheme';
 import { sha256Hex } from './pdf/sha256';
+import {
+  defaultOrder,
+  includedPages,
+  isDefaultOrder,
+  movePage,
+  setPageExcluded,
+  type PageOrder,
+} from './pdf/pageOrder';
 import { Toolbar } from './components/Toolbar';
 import { PageList } from './components/PageList';
 import { PageCanvas, type RepeatMarker } from './components/PageCanvas';
@@ -45,6 +53,7 @@ import { FindPanel, type FindStatus } from './components/FindPanel';
 import { RepeatPanel } from './components/RepeatPanel';
 import { LeakPanel, type LeakStatus } from './components/LeakPanel';
 import { ImportDialog } from './components/ImportDialog';
+import { ExportOrderPanel } from './components/ExportOrderPanel';
 
 const ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
 
@@ -105,6 +114,10 @@ export default function App() {
   const leakScanToken = useRef(0);
   const leakCancelToken = useRef(0);
 
+  // ---- 导出页序（独立于遮盖的撤销 / 重做；导入新 PDF 时重置） ----
+  const [orderOpen, setOrderOpen] = useState(false);
+  const [pageOrder, setPageOrder] = useState<PageOrder>(() => defaultOrder(0));
+
   const {
     value: redactions,
     set: setRedactions,
@@ -118,6 +131,10 @@ export default function App() {
   const numPages = doc?.numPages ?? 0;
   const boxesForPage = redactions[pageNum] ?? [];
   const totalBoxes = Object.values(redactions).reduce((sum, list) => sum + list.length, 0);
+
+  // 导出时实际处理的原始页号（按当前编排顺序、不含已排除页）
+  const exportPages = useMemo(() => includedPages(pageOrder), [pageOrder]);
+  const orderChanged = useMemo(() => !isDefaultOrder(pageOrder), [pageOrder]);
 
   // 预览期间遮盖被其他途径修改（撤销 / 手工增删）时，按最新遮盖刷新重复标记，
   // 保证「确认加入」的跳过判断与界面一致
@@ -197,6 +214,9 @@ export default function App() {
         setSelectedId(null);
         setExportGuardArmed(false);
         reset({});
+        // 导入新 PDF 时重置导出编排：恢复 1..N 原始顺序、清空排除页
+        setPageOrder(defaultOrder(pdf.numPages));
+        setOrderOpen(false);
         pageTextCache.current = new Map();
         setFindHits(new Map());
         setCheckedHits(new Set());
@@ -507,6 +527,7 @@ export default function App() {
       if (next) {
         setFindOpen(false);
         setLeakOpen(false);
+        setOrderOpen(false);
         setTool('draw');
       } else {
         setRepeatSource(null);
@@ -623,6 +644,7 @@ export default function App() {
       if (next) {
         setFindOpen(false);
         setRepeatOpen(false);
+        setOrderOpen(false);
       } else {
         // 关闭时取消进行中的扫描，已完成的结果保留
         leakCancelToken.current += 1;
@@ -768,6 +790,44 @@ export default function App() {
     [leakReport],
   );
 
+  // ================= 导出页序 =================
+
+  /** 打开 / 关闭导出页序面板：互斥于其余右侧面板（页序调整不进入遮盖历史） */
+  const toggleOrder = useCallback(() => {
+    setOrderOpen((open) => {
+      const next = !open;
+      if (next) {
+        setFindOpen(false);
+        setRepeatOpen(false);
+        setLeakOpen(false);
+      }
+      return next;
+    });
+  }, []);
+
+  const closeOrder = useCallback(() => setOrderOpen(false), []);
+
+  const moveOrderPage = useCallback((page: number, delta: -1 | 1) => {
+    setPageOrder((order) => movePage(order, page, delta));
+  }, []);
+
+  /** 排除 / 恢复页面；纯函数已保证至少保留一页，这里再兜底提示 */
+  const toggleOrderExcluded = useCallback(
+    (page: number) => {
+      const next = setPageExcluded(pageOrder, page, !pageOrder.excluded.has(page));
+      if (!next) {
+        setError('至少保留一页参与导出，不能排除全部页面。');
+        return;
+      }
+      setPageOrder(next);
+    },
+    [pageOrder],
+  );
+
+  const resetOrder = useCallback(() => {
+    setPageOrder((order) => defaultOrder(order.ordered.length));
+  }, []);
+
   const zoomIn = () => setZoom((z) => ZOOM_LEVELS.find((l) => l > z + 0.001) ?? ZOOM_LEVELS[ZOOM_LEVELS.length - 1]);
   const zoomOut = () => setZoom((z) => [...ZOOM_LEVELS].reverse().find((l) => l < z - 0.001) ?? ZOOM_LEVELS[0]);
 
@@ -805,6 +865,11 @@ export default function App() {
 
   const onExport = async () => {
     if (!doc || exporting) return;
+    // 不允许排除全部页面（正常流程按钮已拦截，这里再兜底）
+    if (exportPages.length === 0) {
+      setError('至少保留一页参与导出，不能排除全部页面。');
+      return;
+    }
     // 没跑过检查、或检查结果对当前遮盖已过期（重扫时会用当前遮盖重建）时，先拦一次
     const needsScan = !leakReport || leakReport.redactions !== redactions;
     if ((needsScan || exportLeakWarning) && !exportGuardArmed) {
@@ -812,6 +877,7 @@ export default function App() {
       setLeakOpen(true);
       setFindOpen(false);
       setRepeatOpen(false);
+      setOrderOpen(false);
       if (needsScan) {
         setError('导出前请先运行「边缘泄漏检查」：没有可提取文字的页面会列为未检查，需人工确认后再导出。');
       } else {
@@ -821,10 +887,11 @@ export default function App() {
     }
     setExportGuardArmed(false);
     setExporting(true);
-    setProgress({ done: 0, total: doc.numPages });
+    // 进度总数与实际处理的页数一致：只按编排顺序处理未排除页
+    setProgress({ done: 0, total: exportPages.length });
     setError(null);
     try {
-      await exportRedactedPdf(doc, redactions, fileName, (done, total) =>
+      await exportRedactedPdf(doc, redactions, exportPages, fileName, (done, total) =>
         setProgress({ done, total }),
       );
     } catch {
@@ -953,6 +1020,7 @@ export default function App() {
         findOpen={findOpen}
         repeatOpen={repeatOpen}
         leakOpen={leakOpen}
+        orderOpen={orderOpen}
         canUseScheme={!!doc && pageSizes.length === numPages && sourceHash.length === 64}
         onOpen={() => fileInputRef.current?.click()}
         onToolChange={setTool}
@@ -962,12 +1030,14 @@ export default function App() {
             if (next) {
               setRepeatOpen(false);
               setLeakOpen(false);
+              setOrderOpen(false);
             }
             return next;
           });
         }}
         onToggleRepeat={toggleRepeat}
         onToggleLeak={toggleLeak}
+        onToggleOrder={toggleOrder}
         onZoomIn={zoomIn}
         onZoomOut={zoomOut}
         onRotate={() => setRotation((r) => (r + 90) % 360)}
@@ -1073,6 +1143,19 @@ export default function App() {
               onJump={setPageNum}
             />
           )}
+          {orderOpen && (
+            <ExportOrderPanel
+              pdf={doc}
+              order={pageOrder}
+              currentPage={pageNum}
+              redactions={redactions}
+              onMove={moveOrderPage}
+              onToggleExcluded={toggleOrderExcluded}
+              onReset={resetOrder}
+              onJump={setPageNum}
+              onClose={closeOrder}
+            />
+          )}
         </div>
       ) : (
         <div className="empty">
@@ -1097,6 +1180,11 @@ export default function App() {
             {leakOpen && leakReport && (
               <span>
                 边缘泄漏风险 {totalLeakRisks} 处 · 未检查 {leakReport.unchecked.length} 页
+              </span>
+            )}
+            {orderChanged && (
+              <span>
+                导出页序：{exportPages.length} / {numPages} 页
               </span>
             )}
             <span>导出分辨率 144 DPI · 纯本地处理</span>
