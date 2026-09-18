@@ -11,17 +11,22 @@ export const EXPORT_DPI = 144;
  * 2. 遮盖区域以纯黑矩形烧入位图；
  * 3. 用 pdf-lib 生成全新 PDF，每页只包含一张位图，页面尺寸与原页保持一致。
  * 因此导出的 PDF 不再保留被遮区域的可复制文字或任何原始页面对象。
+ *
+ * pages 为导出页序（原始页号，已剔除被排除页）：只处理这些页，
+ * 输出 PDF 的页序与 pages 一致；遮盖仍按原始页号查找。
  */
 export async function exportRedactedPdf(
   pdf: PDFDocumentProxy,
   redactions: RedactionMap,
   sourceName: string,
+  pages: number[],
   onProgress?: (done: number, total: number) => void,
 ): Promise<void> {
   const out = await PDFDocument.create();
   const scale = EXPORT_DPI / 72;
 
-  for (let n = 1; n <= pdf.numPages; n += 1) {
+  for (let i = 0; i < pages.length; i += 1) {
+    const n = pages[i];
     const page = await pdf.getPage(n);
     // 原始页面尺寸（点），包含页面自身旋转，保证导出后各页尺寸不变
     const base = page.getViewport({ scale: 1 });
@@ -59,7 +64,7 @@ export async function exportRedactedPdf(
     const newPage = out.addPage([base.width, base.height]);
     newPage.drawImage(png, { x: 0, y: 0, width: base.width, height: base.height });
 
-    onProgress?.(n, pdf.numPages);
+    onProgress?.(i + 1, pages.length);
   }
 
   const bytes = await out.save();

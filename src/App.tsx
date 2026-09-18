@@ -6,6 +6,13 @@ import { uid } from './types';
 import { useUndoable } from './state/useUndoable';
 import { exportRedactedPdf } from './pdf/exportPdf';
 import {
+  includedPages,
+  initPageOrder,
+  movePage,
+  setPageExcluded,
+  type PageOrderState,
+} from './pdf/pageOrder';
+import {
   PageText,
   parseQueries,
   rectKey,
@@ -104,6 +111,11 @@ export default function App() {
   const [selectedLeakId, setSelectedLeakId] = useState<string | null>(null);
   const leakScanToken = useRef(0);
   const leakCancelToken = useRef(0);
+
+  // ---- 导出页序 ----
+  // 只影响导出时处理哪些页、按什么顺序处理；页面 / 遮盖始终以原始页号为稳定标识。
+  // 不进入撤销历史（撤销 / 重做只作用于遮盖），导入新 PDF 时重置。
+  const [arrangement, setArrangement] = useState<PageOrderState>({ order: [], excluded: [] });
 
   const {
     value: redactions,
@@ -216,6 +228,8 @@ export default function App() {
         setSelectedLeakId(null);
         leakScanToken.current += 1;
         leakCancelToken.current += 1;
+        // 导入新文档：导出页序重置为原始页序、无排除页
+        setArrangement(initPageOrder(pdf.numPages));
       } catch {
         setError('无法解析该文件，请确认是有效的 PDF。');
       }
@@ -768,6 +782,27 @@ export default function App() {
     [leakReport],
   );
 
+  // ================= 导出页序 =================
+
+  /** 导出时实际处理的页序列：按当前编排顺序的未排除页（原始页号） */
+  const exportPages = useMemo(() => includedPages(arrangement), [arrangement]);
+
+  const movePageInOrder = useCallback((pageNo: number, delta: -1 | 1) => {
+    setArrangement((s) => movePage(s, pageNo, delta));
+  }, []);
+
+  const togglePageExcluded = useCallback((pageNo: number) => {
+    setArrangement((s) => {
+      const next = setPageExcluded(s, pageNo, !s.excluded.includes(pageNo));
+      // 返回 null 表示“排除全部页面”被拒绝，保持原状（界面上该按钮已禁用）
+      return next ?? s;
+    });
+  }, []);
+
+  const resetArrangement = useCallback(() => {
+    setArrangement((s) => initPageOrder(s.order.length));
+  }, []);
+
   const zoomIn = () => setZoom((z) => ZOOM_LEVELS.find((l) => l > z + 0.001) ?? ZOOM_LEVELS[ZOOM_LEVELS.length - 1]);
   const zoomOut = () => setZoom((z) => [...ZOOM_LEVELS].reverse().find((l) => l < z - 0.001) ?? ZOOM_LEVELS[0]);
 
@@ -821,10 +856,11 @@ export default function App() {
     }
     setExportGuardArmed(false);
     setExporting(true);
-    setProgress({ done: 0, total: doc.numPages });
+    // 只按当前编排顺序处理未排除页，进度总数同步
+    setProgress({ done: 0, total: exportPages.length });
     setError(null);
     try {
-      await exportRedactedPdf(doc, redactions, fileName, (done, total) =>
+      await exportRedactedPdf(doc, redactions, fileName, exportPages, (done, total) =>
         setProgress({ done, total }),
       );
     } catch {
@@ -991,7 +1027,16 @@ export default function App() {
 
       {doc ? (
         <div className="main">
-          <PageList pdf={doc} current={pageNum} redactions={redactions} onSelect={setPageNum} />
+          <PageList
+            pdf={doc}
+            current={pageNum}
+            redactions={redactions}
+            arrangement={arrangement}
+            onSelect={setPageNum}
+            onMove={movePageInOrder}
+            onToggleExcluded={togglePageExcluded}
+            onResetOrder={resetArrangement}
+          />
           <div className="viewer">
             {page && (
               <PageCanvas
@@ -1093,6 +1138,11 @@ export default function App() {
           <>
             <span>本页遮盖 {boxesForPage.length} 处</span>
             <span>全文共 {totalBoxes} 处</span>
+            {arrangement.excluded.length > 0 && (
+              <span>
+                导出 {exportPages.length} / {numPages} 页（已排除 {arrangement.excluded.length} 页）
+              </span>
+            )}
             {findOpen && totalCandidates > 0 && <span>查找候选 {totalCandidates} 处</span>}
             {leakOpen && leakReport && (
               <span>
